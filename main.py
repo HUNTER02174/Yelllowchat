@@ -1,5 +1,5 @@
 import sqlite3
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler, CallbackQueryHandler, filters
 
 ADMIN_ID = 6447881580          # آیدی عددی ادمین
@@ -119,12 +119,23 @@ async def get_join_keyboard():
 
 async def post_init(application):
     init_db()
-    # فقط دستورات عمومی را در منوی تلگرام قرار می‌دهیم تا info نمایش داده نشود
-    commands = [
+    # منوی دستورات عمومی
+    user_commands = [
         BotCommand("start", "🚀 شروع و منوی اصلی"),
         BotCommand("help", "❓ راهنمای استفاده از ربات")
     ]
-    await application.bot.set_my_commands(commands)
+    await application.bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
+
+    # منوی دستورات اختصاصی ادمین
+    admin_commands = [
+        BotCommand("start", "🚀 شروع و منوی اصلی"),
+        BotCommand("help", "❓ راهنمای استفاده از ربات"),
+        BotCommand("info", "🔍 استعلام هویت کاربر با کد")
+    ]
+    try:
+        await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_ID))
+    except Exception as e:
+        print(f"تنظیم دستورات ادمین با خطا مواجه شد: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -171,7 +182,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def user_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # فقط ادمین مجاز است
     if user_id != ADMIN_ID:
         return
 
@@ -255,19 +265,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "show_blocked":
         user_blocks = get_user_blocks(user_id)
         if not user_blocks:
-            await query.answer("لیست مسدودی‌های شما خالی است!", show_alert=True)
+            await query.message.reply_text("❕ لیست کاربران بلاک‌شده توسط شما خالی است.")
         else:
-            await query.message.reply_text("🚫 لیست کاربران بلاک‌شده توسط شما:", parse_mode="Markdown")
+            await query.message.reply_text("🚫 **لیست کاربران بلاک‌شده توسط شما:**", parse_mode="Markdown")
             for b_code in user_blocks:
                 btn = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ آنبلاک کد {b_code}", callback_data=f"unblock_{b_code}")]])
-                await query.message.reply_text(f"👤 کاربر با کد: {b_code}", reply_markup=btn, parse_mode="Markdown")
+                await query.message.reply_text(f"👤 کاربر با کد: `{b_code}`", reply_markup=btn, parse_mode="Markdown")
 
     elif query.data.startswith("unblock_"):
         target_code_to_unblock = query.data.split("_")[1]
         remove_block(user_id, target_code_to_unblock)
         await query.answer("کاربر با موفقیت آنبلاک شد ✅", show_alert=True)
         try:
-            await query.message.edit_text(f"✅ کاربر با کد {target_code_to_unblock} از مسدودی خارج شد.", parse_mode="Markdown")
+            await query.message.edit_text(f"✅ کاربر با کد `{target_code_to_unblock}` از مسدودی خارج شد.", parse_mode="Markdown")
         except:
             pass
 
@@ -281,7 +291,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "admin_stats":
         if user_id == ADMIN_ID:
             tot, msgs = get_stats()
-            await query.message.reply_text(f"📊 آمار ربات:\n\n👥 کاربران: {tot}\n💬 پیام‌ها: {msgs}")
+            await query.message.reply_text(f"📊 **آمار ربات:**\n\n👥 کاربران: {tot}\n💬 پیام‌ها: {msgs}", parse_mode="Markdown")
 
     elif query.data == "start_broadcast":
         if user_id == ADMIN_ID:
@@ -293,7 +303,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_block(user_id, target_code_to_block)
         await query.answer("کاربر مسدود شد 🚫", show_alert=True)
         try:
-            await query.message.edit_text(query.message.text + "\n\n❌ *(این کاربر توسط شما مسدود شد)*")
+            await query.message.edit_text(query.message.text + "\n\n❌ *(این کاربر توسط شما مسدود شد)*", parse_mode="Markdown")
         except:
             pass
 
