@@ -26,6 +26,15 @@ def init_db():
                         id INTEGER PRIMARY KEY,
                         msg_count INTEGER)''')
     cursor.execute('INSERT OR IGNORE INTO stats (id, msg_count) VALUES (1, 0)')
+    
+    # اصلاح فرمت داده‌های قدیمی در صورت وجود
+    cursor.execute('SELECT user_id FROM users')
+    rows = cursor.fetchall()
+    for row in rows:
+        u_id = row[0]
+        correct_code = generate_user_code(u_id)
+        cursor.execute('UPDATE users SET code = ? WHERE user_id = ?', (correct_code, u_id))
+
     conn.commit()
     conn.close()
 
@@ -43,9 +52,15 @@ def save_or_update_user(user):
     return code
 
 def get_user_by_code(code):
+    clean_code = str(code).strip()
+    padded_code = clean_code.zfill(8) if len(clean_code) < 8 else clean_code[-8:]
+    
     conn = sqlite3.connect('bot_data.db')
     cursor = conn.cursor()
-    cursor.execute('SELECT user_id, username, first_name FROM users WHERE code = ?', (str(code),))
+    # جستجو بر اساس تمام حالت‌های ممکن کد
+    cursor.execute('''SELECT user_id, username, first_name, code FROM users 
+                      WHERE code = ? OR code = ? OR user_id = ?''', 
+                   (clean_code, padded_code, clean_code if clean_code.isdigit() else -1))
     res = cursor.fetchone()
     conn.close()
     return res
@@ -53,23 +68,26 @@ def get_user_by_code(code):
 def is_blocked(blocker_id, sender_code):
     conn = sqlite3.connect('bot_data.db')
     cursor = conn.cursor()
-    cursor.execute('SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_code = ?', (blocker_id, str(sender_code)))
+    clean_code = str(sender_code).strip()
+    cursor.execute('SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_code = ?', (blocker_id, clean_code))
     res = cursor.fetchone()
     conn.close()
     return res is not None
 
 def add_block(blocker_id, blocked_code):
-    if not is_blocked(blocker_id, blocked_code):
+    clean_code = str(blocked_code).strip()
+    if not is_blocked(blocker_id, clean_code):
         conn = sqlite3.connect('bot_data.db')
         cursor = conn.cursor()
-        cursor.execute('INSERT INTO blocks (blocker_id, blocked_code) VALUES (?, ?)', (blocker_id, str(blocked_code)))
+        cursor.execute('INSERT INTO blocks (blocker_id, blocked_code) VALUES (?, ?)', (blocker_id, clean_code))
         conn.commit()
         conn.close()
 
 def remove_block(blocker_id, blocked_code):
+    clean_code = str(blocked_code).strip()
     conn = sqlite3.connect('bot_data.db')
     cursor = conn.cursor()
-    cursor.execute('DELETE FROM blocks WHERE blocker_id = ? AND blocked_code = ?', (blocker_id, str(blocked_code)))
+    cursor.execute('DELETE FROM blocks WHERE blocker_id = ? AND blocked_code = ?', (blocker_id, clean_code))
     conn.commit()
     conn.close()
 
@@ -163,7 +181,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target = get_user_by_code(target_code)
         
         if not target:
-            await update.message.reply_text("❌ کاربر مورد نظر پیدا نشد یا کد اشتباه است.")
+            await update.message.reply_text("❌ کاربر مورد نظر پیدا نشد یا لینک منقضی شده است.")
             user_states.pop(user_id, None)
             return
 
@@ -205,14 +223,15 @@ async def show_user_info_by_code(message_obj, target_code: str):
         await message_obj.reply_text(f"❌ کاربر با کد `{target_code}` در دیتابیس یافت نشد.", parse_mode="Markdown")
         return
 
-    target_id, uname, fname = target
+    target_id, uname, fname, code_in_db = target
     uname_str = f"@{uname}" if uname != "ندارد" else "ندارد"
 
     res = (
-        f"🔍 **اطلاعات واقعی کاربر با کد `{target_code}`:**\n\n"
+        f"🔍 **اطلاعات واقعی کاربر:**\n\n"
+        f"🔢 **کد اختصاصی:** `{code_in_db}`\n"
         f"👤 **نام واقعی:** {fname}\n"
         f"🆔 **یوزرنیم:** {uname_str}\n"
-        f"🔢 **آیدی عددی:** `{target_id}`"
+        f"🆔 **آیدی عددی:** `{target_id}`"
     )
     await message_obj.reply_text(res, parse_mode="Markdown")
 
@@ -280,7 +299,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text(f"👤 کاربر با کد: `{b_code}`", reply_markup=btn, parse_mode="Markdown")
 
     elif query.data.startswith("unblock_"):
-        target_code_to_unblock = query.data.split("unblock_")[1]
+        target_code_to_unblock = query.data.replace("unblock_", "", 1)
         remove_block(user_id, target_code_to_unblock)
         await query.answer("کاربر با موفقیت آنبلاک شد ✅", show_alert=True)
         try:
@@ -290,7 +309,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data.startswith("checkuser_"):
         if user_id == ADMIN_ID:
-            code_to_check = query.data.split("checkuser_")[1]
+            code_to_check = query.data.replace("checkuser_", "", 1)
             await show_user_info_by_code(query.message, code_to_check)
         else:
             await query.answer("این قابلیت فقط برای ادمین ربات است! ❌", show_alert=True)
@@ -306,7 +325,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("✍️ پیام عمومی خود را بفرستید:")
 
     elif query.data.startswith("block_"):
-        target_code_to_block = query.data.split("block_")[1]
+        target_code_to_block = query.data.replace("block_", "", 1)
         add_block(user_id, target_code_to_block)
         await query.answer("کاربر مسدود شد 🚫", show_alert=True)
         try:
@@ -318,7 +337,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_all_memberships(user_id, context):
             await query.message.reply_text("⚠️ برای ادامه باید در کانال‌ها عضو شوید:", reply_markup=await get_join_keyboard())
             return
-        target_code = query.data.split("reply_")[1]
+        target_code = query.data.replace("reply_", "", 1)
         user_states[user_id] = {'action': 'replying', 'target_code': target_code}
         await query.message.reply_text("✍️ پاسخ خود را بفرستید:")
 
@@ -326,7 +345,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_all_memberships(user_id, context):
             await query.message.reply_text("⚠️ برای ادامه باید در کانال‌ها عضو شوید:", reply_markup=await get_join_keyboard())
             return
-        target_code = query.data.split("react_")[1]
+        target_code = query.data.replace("react_", "", 1)
         keyboard = [
             [InlineKeyboardButton("❤️", callback_data=f"sendreact_❤️_{target_code}"),
              InlineKeyboardButton("😂", callback_data=f"sendreact_😂_{target_code}"),
@@ -336,10 +355,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("یک ری‌اکشن انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data.startswith("sendreact_"):
-        parts = query.data.split("_")
-        if len(parts) >= 3:
-            emoji = parts[1]
-            target_code = parts[2]
+        parts = query.data.split("_", 2)
+        if len(parts) == 3:
+            _, emoji, target_code = parts
             target = get_user_by_code(target_code)
             if target:
                 try:
