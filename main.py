@@ -62,6 +62,21 @@ def add_block(blocker_id, blocked_code):
         conn.commit()
         conn.close()
 
+def remove_block(blocker_id, blocked_code):
+    conn = sqlite3.connect('bot_data.db')
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM blocks WHERE blocker_id = ? AND blocked_code = ?', (blocker_id, blocked_code))
+    conn.commit()
+    conn.close()
+
+def get_user_blocks(blocker_id):
+    conn = sqlite3.connect('bot_data.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT blocked_code FROM blocks WHERE blocker_id = ?', (blocker_id,))
+    res = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return res
+
 def increment_msg_count():
     conn = sqlite3.connect('bot_data.db')
     cursor = conn.cursor()
@@ -106,7 +121,8 @@ async def post_init(application):
     init_db()
     commands = [
         BotCommand("start", "🚀 شروع و منوی اصلی"),
-        BotCommand("help", "❓ راهنمای استفاده")
+        BotCommand("help", "❓ راهنمای استفاده از ربات"),
+        BotCommand("info", "🔍 استعلام هویت (مخصوص ادمین)")
     ]
     await application.bot.set_my_commands(commands)
 
@@ -143,6 +159,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await send_main_menu(update, context)
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = (
+        "❓ **راهنمای استفاده از یـلو چت:**\n\n"
+        "1️⃣ لینک اختصاصی خود را از منوی اصلی دریافت کنید.\n"
+        "2️⃣ لینک را در بیو تلگرام یا شبکه‌های اجتماعی بگذارید.\n"
+        "3️⃣ هرکس روی لینک بزند، می‌تواند به شما پیام، ویس، عکس، گیف یا استیکر ناشناس بفرستد!\n"
+        "4️⃣ می‌توانید به پیام‌های دریافتی پاسخ دهید، ری‌اکشن بفرستید یا فرستنده مزاحم را بلاک کنید."
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+async def user_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        return
+
+    if not context.args:
+        await update.message.reply_text("⚠️ لطفاً کد کاربر را وارد کنید.\nمثال:\n`/info 12345678`", parse_mode="Markdown")
+        return
+
+    target_code = context.args[0]
+    await show_user_info_by_code(update.message, target_code)
+
 async def show_user_info_by_code(message_obj, target_code: str):
     target = get_user_by_code(target_code)
     if not target:
@@ -175,7 +213,7 @@ async def send_main_menu(update_or_query, context):
     else:
         keyboard = [
             [InlineKeyboardButton("🔗 لینک ناشناس من", callback_data="get_link")],
-            [InlineKeyboardButton("📩 پشتیبانی", callback_data="support_mode")]
+            [InlineKeyboardButton("🚫 کاربران بلاک‌شده", callback_data="show_blocked"), InlineKeyboardButton("📩 پشتیبانی", callback_data="support_mode")]
         ]
         text = f"💛 به یــلو چت خوش آمدید!\n\nکد اختصاصی شما: `{sender_code}`"
 
@@ -213,6 +251,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         personal_link = f"https://t.me/{bot_info.username}?start={sender_code}"
         await query.message.reply_text(f"📌 لینک ناشناس شما:\n\n{personal_link}", parse_mode="Markdown")
 
+    elif query.data == "show_blocked":
+        user_blocks = get_user_blocks(user_id)
+        if not user_blocks:
+            await query.answer("لیست مسدودی‌های شما خالی است!", show_alert=True)
+        else:
+            await query.message.reply_text("🚫 لیست کاربران بلاک‌شده توسط شما:", parse_mode="Markdown")
+            for b_code in user_blocks:
+                btn = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ آنبلاک کد {b_code}", callback_data=f"unblock_{b_code}")]])
+                await query.message.reply_text(f"👤 کاربر با کد: {b_code}", reply_markup=btn, parse_mode="Markdown")
+
+    elif query.data.startswith("unblock_"):
+        target_code_to_unblock = query.data.split("_")[1]
+        remove_block(user_id, target_code_to_unblock)
+        await query.answer("کاربر با موفقیت آنبلاک شد ✅", show_alert=True)
+        try:
+            await query.message.edit_text(f"✅ کاربر با کد {target_code_to_unblock} از مسدودی خارج شد.", parse_mode="Markdown")
+        except:
+            pass
+
     elif query.data.startswith("checkuser_"):
         if user_id == ADMIN_ID:
             code_to_check = query.data.split("_")[1]
@@ -230,6 +287,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_code_to_block = query.data.split("_")[1]
         add_block(user_id, target_code_to_block)
         await query.answer("کاربر مسدود شد 🚫", show_alert=True)
+        try:
+            await query.message.edit_text(query.message.text + "\n\n❌ *(این کاربر توسط شما مسدود شد)*")
+        except:
+            pass
 
     elif query.data.startswith("reply_"):
         if not await check_all_memberships(user_id, context):
@@ -238,6 +299,32 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_code = query.data.split("_")[1]
         user_states[user_id] = {'action': 'replying', 'target_code': target_code}
         await query.message.reply_text("✍️ پاسخ خود را بفرستید:")
+
+    elif query.data.startswith("react_"):
+        if not await check_all_memberships(user_id, context):
+            await query.message.reply_text("⚠️ برای ادامه باید در کانال‌ها عضو شوید:", reply_markup=await get_join_keyboard())
+            return
+        target_code = query.data.split("_")[1]
+        keyboard = [
+            [InlineKeyboardButton("❤️", callback_data=f"sendreact_❤️_{target_code}"),
+             InlineKeyboardButton("😂", callback_data=f"sendreact_😂_{target_code}"),
+             InlineKeyboardButton("🔥", callback_data=f"sendreact_🔥_{target_code}"),
+             InlineKeyboardButton("👍", callback_data=f"sendreact_👍_{target_code}")]
+        ]
+        await query.message.reply_text("یک ری‌اکشن انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data.startswith("sendreact_"):
+        _, emoji, target_code = query.data.split("_")
+        target = get_user_by_code(target_code)
+        if target:
+            try:
+                await context.bot.send_message(chat_id=target[0], text=f"طرف مقابل به پیام شما این ری‌اکشن را نشان داد: {emoji}")
+            except:
+                pass
+        try:
+            await query.message.edit_text(f"ری‌اکشن {emoji} ارسال شد!")
+        except:
+            await query.message.reply_text(f"ری‌اکشن {emoji} ارسال شد!")
 
     elif query.data == "support_mode":
         user_states[user_id] = {'action': 'support'}
@@ -286,7 +373,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             user_keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("💬 پاسخ", callback_data=f"reply_{sender_code}")],
+                [InlineKeyboardButton("💬 پاسخ", callback_data=f"reply_{sender_code}"),
+                 InlineKeyboardButton("❤️ ری‌اکشن", callback_data=f"react_{sender_code}")],
                 [InlineKeyboardButton("🚫 بلاک این فرستنده", callback_data=f"block_{sender_code}")]
             ])
 
@@ -296,11 +384,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
 
             try:
-                # ارسال به گیرنده (فرم پیام برای کاربر معمولی)
+                # ارسال به گیرنده
                 await context.bot.send_message(chat_id=target_id, text=f"📩 **پیام ناشناس جدید از طرف کاربر (کد: `{sender_code}`):**", parse_mode="Markdown")
                 await update.message.copy(chat_id=target_id, reply_markup=user_keyboard)
 
-                # گزارش به ادمین (فرستنده و گیرنده مشخص)
+                # گزارش به ادمین
                 if target_id != ADMIN_ID:
                     admin_header = (
                         f"👁‍🗨 **[مانیتورینگ ادمین]**\n\n"
@@ -338,6 +426,8 @@ if __name__ == '__main__':
     application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("info", user_info_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), handle_message))
 
