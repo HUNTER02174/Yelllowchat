@@ -3,7 +3,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, Comma
 
 ADMIN_ID = 6447881580          # آیدی عددی ادمین
 
-# لیست کانال‌های جوین اجباری (می‌توانید هر چندتا کانال که خواستید اینجا قرار دهید)
+# لیست کانال‌های جوین اجباری
 REQUIRED_CHANNELS = ["@wilililill", "@Yelllowchat"]
 
 # حافظه ربات
@@ -27,7 +27,6 @@ def get_user_code(user: object) -> str:
     return code
 
 async def check_all_memberships(user_id, context):
-    # اگر کاربر ادمین بود نیازی به چک کردن کانال ندارد
     if user_id == ADMIN_ID:
         return True
         
@@ -61,6 +60,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender_code = get_user_code(user)
     args = context.args
 
+    # اگر کاربر با لینک اختصاصی کسی وارد شده باشد، کد گیرنده ذخیره می‌شود
+    if args and args[0]:
+        target_code = args[0]
+        if target_code != sender_code:
+            user_states[user_id] = {'action': 'sending_anonymous', 'target_code': target_code}
+
+    # بررسی عضویت در کانال‌ها
     if not await check_all_memberships(user_id, context):
         await update.message.reply_text(
             "⚠️ برای استفاده از ربات، ابتدا باید در تمام کانال‌های زیر عضو شوید:",
@@ -68,19 +74,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if args and args[0]:
-        target_code = args[0]
-        if target_code == sender_code:
-            await update.message.reply_text("❌ نمی‌توانید به خودتان پیام ناشناس بفرستید!")
-        else:
-            target_id = user_code_map.get(target_code)
-            if target_id and sender_code in blocked_users.get(target_id, []):
-                await update.message.reply_text("❌ متاسفانه این کاربر شما را مسدود (بلاک) کرده است.")
-                return
-
-            user_states[user_id] = {'action': 'sending_anonymous', 'target_code': target_code}
-            await update.message.reply_text("✍️ پیام، عکس، ویس، گیف یا استیکر ناشناس خود را بفرستید:")
+    # اگر از قبل کدی ثبت شده بود
+    state = user_states.get(user_id, {})
+    if state.get('action') == 'sending_anonymous':
+        target_code = state.get('target_code')
+        target_id = user_code_map.get(target_code)
+        if target_id and sender_code in blocked_users.get(target_id, []):
+            await update.message.reply_text("❌ متاسفانه این کاربر شما را مسدود (بلاک) کرده است.")
+            user_states.pop(user_id, None)
             return
+        
+        await update.message.reply_text("✍️ پیام، عکس، ویس، گیف یا استیکر ناشناس خود را بفرستید:")
+        return
 
     await send_main_menu(update, context)
 
@@ -160,7 +165,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if await check_all_memberships(user_id, context):
             await query.message.delete()
             await query.message.reply_text("عضویت شما تایید شد! 🎉")
-            await send_main_menu(update, context)
+            
+            # هدایت خودکار کاربر پس از تایید عضویت
+            state = user_states.get(user_id, {})
+            if state.get('action') == 'sending_anonymous':
+                target_code = state.get('target_code')
+                target_id = user_code_map.get(target_code)
+                if target_id and sender_code in blocked_users.get(target_id, []):
+                    await query.message.reply_text("❌ متاسفانه این کاربر شما را مسدود (بلاک) کرده است.")
+                    user_states.pop(user_id, None)
+                    return
+                await query.message.reply_text("✍️ پیام، عکس، ویس، گیف یا استیکر ناشناس خود را بفرستید:")
+            else:
+                await send_main_menu(update, context)
         else:
             await query.answer("شما هنوز در همه کانال‌ها عضو نشده‌اید!", show_alert=True)
 
@@ -257,7 +274,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id
     sender_code = get_user_code(user)
 
-    # بررسی لحظه‌ای عضویت در کانال‌ها هنگام ارسال هر پیام
     if not await check_all_memberships(user_id, context):
         await update.message.reply_text(
             "❌ شما از یکی از کانال‌های ما لفت داده‌اید!\nبرای ادامه کار، لطفاً مجدداً در کانال‌ها عضو شوید:",
@@ -267,7 +283,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = user_states.get(user_id, {})
 
-    # ۱. ارسال پیام همگانی
     if user_id == ADMIN_ID and state.get('action') == 'awaiting_broadcast':
         user_states.pop(user_id, None)
         success, failed = 0, 0
@@ -281,7 +296,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ پیام همگانی ارسال شد!\n\nموفق: {success}\nناموفق: {failed}")
         return
 
-    # ۲. ارسال پیام ناشناس / پاسخ بین کاربران
     if state.get('action') in ['sending_anonymous', 'replying']:
         target_code = state.get('target_code')
         target_id = user_code_map.get(target_code)
@@ -328,7 +342,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user_states.pop(user_id, None)
 
-    # ۳. پشتیبانی
     elif state.get('action') == 'support':
         admin_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("💬 پاسخ به این پیام", callback_data=f"reply_{sender_code}")],
