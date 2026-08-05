@@ -2,7 +2,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotComm
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler, CallbackQueryHandler, filters
 
 ADMIN_ID = 6447881580          # آیدی عددی ادمین
-CHANNEL_USERNAME = "@wilililill" # یوزرنیم کانال
+
+# لیست کانال‌های جوین اجباری (می‌توانید هر چندتا کانال که خواستید اینجا قرار دهید)
+REQUIRED_CHANNELS = ["@wilililill", "@Yelllowchat"]
 
 # حافظه ربات
 user_states = {}
@@ -24,14 +26,27 @@ def get_user_code(user: object) -> str:
     all_users.add(user_id)
     return code
 
-async def check_membership(user_id, context):
-    try:
-        member = await context.bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
-        if member.status in ['member', 'administrator', 'creator']:
-            return True
-    except:
-        pass
-    return False
+async def check_all_memberships(user_id, context):
+    # اگر کاربر ادمین بود نیازی به چک کردن کانال ندارد
+    if user_id == ADMIN_ID:
+        return True
+        
+    for channel in REQUIRED_CHANNELS:
+        try:
+            member = await context.bot.get_chat_member(chat_id=channel, user_id=user_id)
+            if member.status not in ['member', 'administrator', 'creator']:
+                return False
+        except:
+            return False
+    return True
+
+async def get_join_keyboard():
+    keyboard = []
+    for channel in REQUIRED_CHANNELS:
+        ch_cleaned = channel.replace('@', '')
+        keyboard.append([InlineKeyboardButton(f"عضویت در کانال {channel} 📢", url=f"https://t.me/{ch_cleaned}")])
+    keyboard.append([InlineKeyboardButton("عضو شدم ✅", callback_data="check_join")])
+    return InlineKeyboardMarkup(keyboard)
 
 async def post_init(application):
     commands = [
@@ -46,14 +61,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender_code = get_user_code(user)
     args = context.args
 
-    if user_id != ADMIN_ID and not await check_membership(user_id, context):
-        keyboard = [
-            [InlineKeyboardButton("عضویت در کانال 📢", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}")],
-            [InlineKeyboardButton("عضو شدم ✅", callback_data="check_join")]
-        ]
+    if not await check_all_memberships(user_id, context):
         await update.message.reply_text(
-            "⚠️ برای استفاده از ربات یـلو چت، ابتدا باید در کانال ما عضو شوید:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            "⚠️ برای استفاده از ربات، ابتدا باید در تمام کانال‌های زیر عضو شوید:",
+            reply_markup=await get_join_keyboard()
         )
         return
 
@@ -146,12 +157,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender_code = get_user_code(user)
 
     if query.data == "check_join":
-        if await check_membership(user_id, context):
+        if await check_all_memberships(user_id, context):
             await query.message.delete()
             await query.message.reply_text("عضویت شما تایید شد! 🎉")
             await send_main_menu(update, context)
         else:
-            await query.answer("هنوز در کانال عضو نشده‌اید!", show_alert=True)
+            await query.answer("شما هنوز در همه کانال‌ها عضو نشده‌اید!", show_alert=True)
 
     elif query.data == "get_link":
         bot_info = await context.bot.get_me()
@@ -203,11 +214,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(query.message.text + "\n\n❌ *(این کاربر توسط شما مسدود شد)*")
 
     elif query.data.startswith("reply_"):
+        if not await check_all_memberships(user_id, context):
+            await query.message.reply_text("⚠️ برای ادامه کار باید در کانال‌های ما عضو باشید:", reply_markup=await get_join_keyboard())
+            return
         target_code = query.data.split("_")[1]
         user_states[user_id] = {'action': 'replying', 'target_code': target_code}
         await query.message.reply_text("✍️ پاسخ خود (متن، استیکر، گیف، ویس و...) را بفرستید:")
 
     elif query.data.startswith("react_"):
+        if not await check_all_memberships(user_id, context):
+            await query.message.reply_text("⚠️ برای ادامه کار باید در کانال‌های ما عضو باشید:", reply_markup=await get_join_keyboard())
+            return
         target_code = query.data.split("_")[1]
         keyboard = [
             [InlineKeyboardButton("❤️", callback_data=f"sendreact_❤️_{target_code}"),
@@ -228,6 +245,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(f"ری‌اکشن {emoji} ارسال شد!")
 
     elif query.data == "support_mode":
+        if not await check_all_memberships(user_id, context):
+            await query.message.reply_text("⚠️ برای ادامه کار باید در کانال‌های ما عضو باشید:", reply_markup=await get_join_keyboard())
+            return
         user_states[user_id] = {'action': 'support'}
         await query.message.reply_text("✍️ پیام خود را برای پشتیبانی بفرستید:")
 
@@ -236,6 +256,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
     sender_code = get_user_code(user)
+
+    # بررسی لحظه‌ای عضویت در کانال‌ها هنگام ارسال هر پیام
+    if not await check_all_memberships(user_id, context):
+        await update.message.reply_text(
+            "❌ شما از یکی از کانال‌های ما لفت داده‌اید!\nبرای ادامه کار، لطفاً مجدداً در کانال‌ها عضو شوید:",
+            reply_markup=await get_join_keyboard()
+        )
+        return
+
     state = user_states.get(user_id, {})
 
     # ۱. ارسال پیام همگانی
@@ -262,14 +291,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_states.pop(user_id, None)
             return
 
-        # کیبورد کاربر عادی
         user_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("💬 پاسخ", callback_data=f"reply_{sender_code}"),
              InlineKeyboardButton("❤️ ری‌اکشن", callback_data=f"react_{sender_code}")],
             [InlineKeyboardButton("🚫 بلاک این فرستنده", callback_data=f"block_{sender_code}")]
         ])
 
-        # کیبورد اختصاصی مانیتورینگ ادمین
         admin_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔍 هویت فرستنده", callback_data=f"checkuser_{sender_code}"),
              InlineKeyboardButton("🔍 هویت گیرنده", callback_data=f"checkuser_{target_code}")]
@@ -277,13 +304,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if target_id:
             try:
-                # پیام ساده و شیک برای کاربر معمولی
                 user_msg_text = f"📩 **پیام ناشناس جدید از طرف کاربر (کد: `{sender_code}`):**"
                 
                 await context.bot.send_message(chat_id=target_id, text=user_msg_text, parse_mode="Markdown")
                 await update.message.copy(chat_id=target_id, reply_markup=user_keyboard)
 
-                # گزارش کامل و دقیق اختصاصی برای ادمین
                 if target_id != ADMIN_ID:
                     admin_header = (
                         f"👁‍🗨 **[مانیتورینگ ادمین]**\n\n"
