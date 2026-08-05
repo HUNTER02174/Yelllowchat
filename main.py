@@ -12,9 +12,6 @@ all_users = set()
 blocked_users = {}            # {گیرنده: [لیست فرستنده‌های بلاک شده]}
 total_messages_count = 0
 
-# ذخیره تمام پیام‌های عبوری برای پیگیری ادمین: {target_code: [{'sender_code': str, 'msg_type': str}]}
-admin_inbox_history = {}
-
 def get_user_code(user: object) -> str:
     user_id = user.id
     s = str(user_id)
@@ -36,7 +33,6 @@ async def check_membership(user_id, context):
         pass
     return False
 
-# تنظیم دکمه‌های منوی رسمی تلگرام
 async def post_init(application):
     commands = [
         BotCommand("start", "🚀 شروع و منوی اصلی"),
@@ -77,7 +73,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await send_main_menu(update, context)
 
-# دستور جدید اختصاصی ادمین برای استعلام هویت واقعی کاربر با کد
 async def user_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
@@ -88,10 +83,12 @@ async def user_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     target_code = context.args[0]
-    target_id = user_code_map.get(target_code)
+    await show_user_info_by_code(update.message, target_code)
 
+async def show_user_info_by_code(message_obj, target_code: str):
+    target_id = user_code_map.get(target_code)
     if not target_id:
-        await update.message.reply_text("❌ کاربری با این کد یافت نشد.")
+        await message_obj.reply_text("❌ کاربری با این کد یافت نشد.")
         return
 
     info = user_info_map.get(target_id, {})
@@ -104,7 +101,7 @@ async def user_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🆔 **یوزرنیم تلگرام:** {uname}\n"
         f"🔢 **آیدی عددی:** `{target_id}`"
     )
-    await update.message.reply_text(res, parse_mode="Markdown")
+    await message_obj.reply_text(res, parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
@@ -123,10 +120,10 @@ async def send_main_menu(update_or_query, context):
 
     if user_id == ADMIN_ID:
         keyboard = [
-            [InlineKeyboardButton("📥 صندوق پیام‌ها و پیگیری کُدها", callback_data="open_inbox")],
+            [InlineKeyboardButton("🔗 لینک ناشناس من", callback_data="get_link")],
             [InlineKeyboardButton("📊 آمار ربات", callback_data="admin_stats"), InlineKeyboardButton("📢 پیام همگانی", callback_data="start_broadcast")]
         ]
-        text = f"👑 پنل مدیریت یـلو چت\n\nتعداد کاربران تا این لحظه: {len(all_users)}\n\n💡 *برای استعلام هویت از دستور `/info کد` استفاده کنید.*"
+        text = f"👑 **پنل مدیریت یـلو چت**\n\nتعداد کاربران تا این لحظه: {len(all_users)}\nکد اختصاصی شما: `{sender_code}`\n\n💡 *برای استعلام دستی هویت: `/info کد`*"
     else:
         keyboard = [
             [InlineKeyboardButton("🔗 لینک ناشناس من", callback_data="get_link")],
@@ -179,30 +176,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("کاربر با موفقیت آنبلاک شد ✅", show_alert=True)
             await query.message.edit_text(f"✅ کاربر با کد {target_code_to_unblock} از مسدودی خارج شد.", parse_mode="Markdown")
 
-    elif query.data == "open_inbox":
-        if not admin_inbox_history:
-            await query.answer("📭 هیچ پیامی در سیستم ثبت نشده است!", show_alert=True)
-        else:
-            await query.message.reply_text("📥 **گزارش کلی تمام پیام‌های عبوری ربات:**", parse_mode="Markdown")
-            for code, msgs in admin_inbox_history.items():
-                inbox_text = (
-                    f"🎯 **گیرنده (کد):** `{code}`\n"
-                    f"🔢 **تعداد پیام دریافت شده:** {len(msgs)} پیام\n"
-                    f"💬 **آخرین فرستنده:** `{msgs[-1]['sender_code']}` ({msgs[-1]['msg_type']})"
-                )
-                btn = InlineKeyboardMarkup([[InlineKeyboardButton(f"🔍 استعلام گیرنده ({code})", callback_data=f"checkuser_{code}"), InlineKeyboardButton(f"🔍 استعلام آخرین فرستنده ({msgs[-1]['sender_code']})", callback_data=f"checkuser_{msgs[-1]['sender_code']}")]])
-                await query.message.reply_text(inbox_text, parse_mode="Markdown", reply_markup=btn)
-
     elif query.data.startswith("checkuser_"):
-        code_to_check = query.data.split("_")[1]
-        target_id = user_code_map.get(code_to_check)
-        if target_id:
-            info = user_info_map.get(target_id, {})
-            uname = f"@{info.get('username')}" if info.get('username') != "ندارد" else "ندارد"
-            fname = info.get('first_name', 'نامشخص')
-            await query.message.reply_text(f"👤 **کد:** `{code_to_check}`\n**نام:** {fname}\n**آیدی:** {uname}\n**آیدی عددی:** `{target_id}`", parse_mode="Markdown")
-        else:
-            await query.message.reply_text("اطلاعات یافت نشد.")
+        if user_id == ADMIN_ID:
+            code_to_check = query.data.split("_")[1]
+            await show_user_info_by_code(query.message, code_to_check)
 
     elif query.data == "admin_stats":
         stats_msg = (
@@ -224,11 +201,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             blocked_users[user_id].append(target_code_to_block)
         await query.answer("کاربر مسدود شد 🚫", show_alert=True)
         await query.message.edit_text(query.message.text + "\n\n❌ *(این کاربر توسط شما مسدود شد)*")
-
-    elif query.data.startswith("replyto_"):
-        target_code = query.data.split("_")[1]
-        user_states[user_id] = {'action': 'admin_reply', 'target_code': target_code}
-        await query.message.reply_text(f"✍️ پاسخ خود را برای کاربر با کد `{target_code}` بنویسید:", parse_mode="Markdown")
 
     elif query.data.startswith("reply_"):
         target_code = query.data.split("_")[1]
@@ -280,20 +252,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ پیام همگانی ارسال شد!\n\nموفق: {success}\nناموفق: {failed}")
         return
 
-    # ۲. پاسخ مستقیم ادمین
-    if user_id == ADMIN_ID and state.get('action') == 'admin_reply':
-        target_code = state.get('target_code')
-        target_id = user_code_map.get(target_code)
-        if target_id:
-            try:
-                await update.message.copy(chat_id=target_id)
-                await update.message.reply_text(f"پاسخ با موفقیت به کاربر `{target_code}` ارسال شد! ✅", parse_mode="Markdown")
-            except:
-                await update.message.reply_text("❌ خطا در ارسال پیام به کاربر.")
-        user_states.pop(user_id, None)
-        return
-
-    # ۳. ارسال پیام ناشناس / پاسخ بین کاربران
+    # ۲. ارسال پیام ناشناس / پاسخ بین کاربران
     if state.get('action') in ['sending_anonymous', 'replying']:
         target_code = state.get('target_code')
         target_id = user_code_map.get(target_code)
@@ -303,29 +262,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_states.pop(user_id, None)
             return
 
-        keyboard = InlineKeyboardMarkup([
+        # ساخت کیبورد زیر پیام
+        buttons = [
             [InlineKeyboardButton("💬 پاسخ", callback_data=f"reply_{sender_code}"),
              InlineKeyboardButton("❤️ ری‌اکشن", callback_data=f"react_{sender_code}")],
             [InlineKeyboardButton("🚫 بلاک این فرستنده", callback_data=f"block_{sender_code}")]
-        ])
+        ]
+
+        # اگر گیرنده ادمین باشد، دکمه استعلام هویت فرستنده هم اضافه می‌شود
+        if target_id == ADMIN_ID:
+            buttons.append([InlineKeyboardButton("🔍 هویت فرستنده (ادمین)", callback_data=f"checkuser_{sender_code}")])
+
+        keyboard = InlineKeyboardMarkup(buttons)
 
         if target_id:
             try:
-                # ذکر کد فرستنده برای تفکیک پیام‌ها توسط گیرنده
-                await context.bot.send_message(
-                    chat_id=target_id, 
-                    text=f"📩 **پیام ناشناس جدید از طرف کاربر (کد: `{sender_code}`):**", 
-                    parse_mode="Markdown"
+                # قالب هدر پیام طبق خواسته شما: کد فرستنده و کد گیرنده
+                header_text = (
+                    f"📩 **پیام ناشناس جدید**\n\n"
+                    f"👤 **فرستنده (کد):** `{sender_code}`\n"
+                    f"🎯 **گیرنده (کد):** `{target_code}`\n"
+                    f"👇 **پیام:**"
                 )
+                await context.bot.send_message(chat_id=target_id, text=header_text, parse_mode="Markdown")
                 await update.message.copy(chat_id=target_id, reply_markup=keyboard)
                 total_messages_count += 1
-
-                # ثبت تمام پیام‌های ردوبدل شده در سیستم جهت نظارت و پیگیری ادمین
-                msg_preview = update.message.text if update.message.text else "رسانه"
-                if target_code not in admin_inbox_history:
-                    admin_inbox_history[target_code] = []
-                admin_inbox_history[target_code].append({'sender_code': sender_code, 'msg_type': msg_preview})
-
                 await update.message.reply_text("پیام شما به صورت ناشناس ارسال شد! ✅")
             except:
                 await update.message.reply_text("❌ خطا در ارسال پیام.")
@@ -334,14 +295,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user_states.pop(user_id, None)
 
-    # ۴. پشتیبانی
+    # ۳. پشتیبانی
     elif state.get('action') == 'support':
         admin_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💬 پاسخ به این پیام", callback_data=f"replyto_{sender_code}")]
+            [InlineKeyboardButton("💬 پاسخ به این پیام", callback_data=f"reply_{sender_code}")],
+            [InlineKeyboardButton("🔍 هویت فرستنده (ادمین)", callback_data=f"checkuser_{sender_code}")]
         ])
-        admin_msg_text = f"📩 پیام جدید به پشتیبانی از طرف کاربر با کد: `{sender_code}`"
+        
+        admin_code = get_user_code(update.effective_user)
+        header_text = (
+            f"📩 **پیام جدید پشتیبانی**\n\n"
+            f"👤 **فرستنده (کد):** `{sender_code}`\n"
+            f"🎯 **گیرنده (کد):** `پشتیبانی (ادمین)`\n"
+            f"👇 **پیام:**"
+        )
 
-        await context.bot.send_message(chat_id=ADMIN_ID, text=admin_msg_text, reply_markup=admin_keyboard, parse_mode="Markdown")
+        await context.bot.send_message(chat_id=ADMIN_ID, text=header_text, reply_markup=admin_keyboard, parse_mode="Markdown")
         await update.message.copy(chat_id=ADMIN_ID)
         await update.message.reply_text("پیام شما به پشتیبانی ارسال شد ✅")
         user_states.pop(user_id, None)
@@ -359,7 +328,7 @@ if __name__ == '__main__':
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("info", user_info_command)) # دستور جدید استعلام هویت
+    application.add_handler(CommandHandler("info", user_info_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), handle_message))
 
