@@ -274,14 +274,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_id == ADMIN_ID:
             code_to_check = query.data.split("_")[1]
             await show_user_info_by_code(query.message, code_to_check)
+        else:
+            await query.answer("این قابلیت فقط برای ادمین ربات است! ❌", show_alert=True)
 
     elif query.data == "admin_stats":
-        tot, msgs = get_stats()
-        await query.message.reply_text(f"📊 آمار ربات:\n\n👥 کاربران: {tot}\n💬 پیام‌ها: {msgs}")
+        if user_id == ADMIN_ID:
+            tot, msgs = get_stats()
+            await query.message.reply_text(f"📊 آمار ربات:\n\n👥 کاربران: {tot}\n💬 پیام‌ها: {msgs}")
 
     elif query.data == "start_broadcast":
-        user_states[user_id] = {'action': 'awaiting_broadcast'}
-        await query.message.reply_text("✍️ پیام عمومی خود را بفرستید:")
+        if user_id == ADMIN_ID:
+            user_states[user_id] = {'action': 'awaiting_broadcast'}
+            await query.message.reply_text("✍️ پیام عمومی خود را بفرستید:")
 
     elif query.data.startswith("block_"):
         target_code_to_block = query.data.split("_")[1]
@@ -372,12 +376,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_states.pop(user_id, None)
                 return
 
+            # کیبورد کاربران عادی (بدون دکمه هویت)
             user_keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("💬 پاسخ", callback_data=f"reply_{sender_code}"),
                  InlineKeyboardButton("❤️ ری‌اکشن", callback_data=f"react_{sender_code}")],
                 [InlineKeyboardButton("🚫 بلاک این فرستنده", callback_data=f"block_{sender_code}")]
             ])
 
+            # کیبورد اختصاصی ادمین (دارای دکمه‌های استعلام هویت)
             admin_keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔍 هویت فرستنده", callback_data=f"checkuser_{sender_code}"),
                  InlineKeyboardButton("🔍 هویت گیرنده", callback_data=f"checkuser_{target_code}")]
@@ -388,7 +394,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=target_id, text=f"📩 **پیام ناشناس جدید از طرف کاربر (کد: `{sender_code}`):**", parse_mode="Markdown")
                 await update.message.copy(chat_id=target_id, reply_markup=user_keyboard)
 
-                # گزارش به ادمین
+                # گزارش به ادمین (فقط اگر گیرنده خود ادمین نباشد تا پیام دو بار ارسال نشود)
                 if target_id != ADMIN_ID:
                     admin_header = (
                         f"👁‍🗨 **[مانیتورینگ ادمین]**\n\n"
@@ -410,8 +416,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif state.get('action') == 'support':
         admin_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💬 پاسخ", callback_data=f"reply_{sender_code}")],
-            [InlineKeyboardButton("🔍 هویت فرستنده", callback_data=f"checkuser_{sender_code}")]
+            [InlineKeyboardButton("💬 پاسخ", callback_data=f"reply_{sender_code}"),
+             InlineKeyboardButton("🔍 هویت فرستنده", callback_data=f"checkuser_{sender_code}")]
         ])
         await context.bot.send_message(chat_id=ADMIN_ID, text=f"📩 **پیام جدید پشتیبانی از کد `{sender_code}`:**", reply_markup=admin_keyboard, parse_mode="Markdown")
         await update.message.copy(chat_id=ADMIN_ID)
