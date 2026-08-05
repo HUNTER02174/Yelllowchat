@@ -41,7 +41,8 @@ def save_or_update_user(user):
 def get_user_by_code(code):
     conn = sqlite3.connect('bot_data.db')
     cursor = conn.cursor()
-    cursor.execute('SELECT user_id, username, first_name FROM users WHERE code = ?', (code,))
+    # اصلاح برای تطبیق دقیق کدها حتی اگر صفرهای ابتدا حذف شده باشند
+    cursor.execute('SELECT user_id, username, first_name FROM users WHERE code = ? OR code = ?', (code, code.zfill(8)))
     res = cursor.fetchone()
     conn.close()
     return res
@@ -49,7 +50,8 @@ def get_user_by_code(code):
 def is_blocked(blocker_id, sender_code):
     conn = sqlite3.connect('bot_data.db')
     cursor = conn.cursor()
-    cursor.execute('SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_code = ?', (blocker_id, sender_code))
+    cursor.execute('SELECT 1 FROM blocks WHERE blocker_id = ? AND (blocked_code = ? OR blocked_code = ?)', 
+                   (blocker_id, sender_code, sender_code.zfill(8)))
     res = cursor.fetchone()
     conn.close()
     return res is not None
@@ -65,7 +67,8 @@ def add_block(blocker_id, blocked_code):
 def remove_block(blocker_id, blocked_code):
     conn = sqlite3.connect('bot_data.db')
     cursor = conn.cursor()
-    cursor.execute('DELETE FROM blocks WHERE blocker_id = ? AND blocked_code = ?', (blocker_id, blocked_code))
+    cursor.execute('DELETE FROM blocks WHERE blocker_id = ? AND (blocked_code = ? OR blocked_code = ?)', 
+                   (blocker_id, blocked_code, blocked_code.zfill(8)))
     conn.commit()
     conn.close()
 
@@ -119,14 +122,12 @@ async def get_join_keyboard():
 
 async def post_init(application):
     init_db()
-    # منوی دستورات عمومی
     user_commands = [
         BotCommand("start", "🚀 شروع و منوی اصلی"),
         BotCommand("help", "❓ راهنمای استفاده از ربات")
     ]
     await application.bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
 
-    # منوی دستورات اختصاصی ادمین
     admin_commands = [
         BotCommand("start", "🚀 شروع و منوی اصلی"),
         BotCommand("help", "❓ راهنمای استفاده از ربات"),
@@ -195,7 +196,7 @@ async def user_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_user_info_by_code(message_obj, target_code: str):
     target = get_user_by_code(target_code)
     if not target:
-        await message_obj.reply_text(f"❌ کاربر با کد `{target_code}` یافت نشد.", parse_mode="Markdown")
+        await message_obj.reply_text(f"❌ کاربر با کد `{target_code}` در دیتابیس یافت نشد.", parse_mode="Markdown")
         return
 
     target_id, uname, fname = target
@@ -273,7 +274,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text(f"👤 کاربر با کد: `{b_code}`", reply_markup=btn, parse_mode="Markdown")
 
     elif query.data.startswith("unblock_"):
-        target_code_to_unblock = query.data.split("_")[1]
+        target_code_to_unblock = query.data.split("_", 1)[1]
         remove_block(user_id, target_code_to_unblock)
         await query.answer("کاربر با موفقیت آنبلاک شد ✅", show_alert=True)
         try:
@@ -283,7 +284,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data.startswith("checkuser_"):
         if user_id == ADMIN_ID:
-            code_to_check = query.data.split("_")[1]
+            code_to_check = query.data.split("_", 1)[1]
             await show_user_info_by_code(query.message, code_to_check)
         else:
             await query.answer("این قابلیت فقط برای ادمین ربات است! ❌", show_alert=True)
@@ -299,7 +300,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("✍️ پیام عمومی خود را بفرستید:")
 
     elif query.data.startswith("block_"):
-        target_code_to_block = query.data.split("_")[1]
+        target_code_to_block = query.data.split("_", 1)[1]
         add_block(user_id, target_code_to_block)
         await query.answer("کاربر مسدود شد 🚫", show_alert=True)
         try:
@@ -311,7 +312,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_all_memberships(user_id, context):
             await query.message.reply_text("⚠️ برای ادامه باید در کانال‌ها عضو شوید:", reply_markup=await get_join_keyboard())
             return
-        target_code = query.data.split("_")[1]
+        target_code = query.data.split("_", 1)[1]
         user_states[user_id] = {'action': 'replying', 'target_code': target_code}
         await query.message.reply_text("✍️ پاسخ خود را بفرستید:")
 
@@ -319,7 +320,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_all_memberships(user_id, context):
             await query.message.reply_text("⚠️ برای ادامه باید در کانال‌ها عضو شوید:", reply_markup=await get_join_keyboard())
             return
-        target_code = query.data.split("_")[1]
+        target_code = query.data.split("_", 1)[1]
         keyboard = [
             [InlineKeyboardButton("❤️", callback_data=f"sendreact_❤️_{target_code}"),
              InlineKeyboardButton("😂", callback_data=f"sendreact_😂_{target_code}"),
@@ -329,17 +330,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("یک ری‌اکشن انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data.startswith("sendreact_"):
-        _, emoji, target_code = query.data.split("_")
-        target = get_user_by_code(target_code)
-        if target:
+        parts = query.data.split("_", 2)
+        if len(parts) == 3:
+            _, emoji, target_code = parts
+            target = get_user_by_code(target_code)
+            if target:
+                try:
+                    await context.bot.send_message(chat_id=target[0], text=f"طرف مقابل به پیام شما این ری‌اکشن را نشان داد: {emoji}")
+                except:
+                    pass
             try:
-                await context.bot.send_message(chat_id=target[0], text=f"طرف مقابل به پیام شما این ری‌اکشن را نشان داد: {emoji}")
+                await query.message.edit_text(f"ری‌اکشن {emoji} ارسال شد!")
             except:
-                pass
-        try:
-            await query.message.edit_text(f"ری‌اکشن {emoji} ارسال شد!")
-        except:
-            await query.message.reply_text(f"ری‌اکشن {emoji} ارسال شد!")
+                await query.message.reply_text(f"ری‌اکشن {emoji} ارسال شد!")
 
     elif query.data == "support_mode":
         user_states[user_id] = {'action': 'support'}
@@ -387,25 +390,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_states.pop(user_id, None)
                 return
 
-            # کیبورد کاربران عادی (بدون دکمه هویت)
             user_keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("💬 پاسخ", callback_data=f"reply_{sender_code}"),
                  InlineKeyboardButton("❤️ ری‌اکشن", callback_data=f"react_{sender_code}")],
                 [InlineKeyboardButton("🚫 بلاک این فرستنده", callback_data=f"block_{sender_code}")]
             ])
 
-            # کیبورد اختصاصی ادمین (دارای دکمه‌های استعلام هویت)
             admin_keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔍 هویت فرستنده", callback_data=f"checkuser_{sender_code}"),
                  InlineKeyboardButton("🔍 هویت گیرنده", callback_data=f"checkuser_{target_code}")]
             ])
 
             try:
-                # ارسال به گیرنده
                 await context.bot.send_message(chat_id=target_id, text=f"📩 **پیام ناشناس جدید از طرف کاربر (کد: `{sender_code}`):**", parse_mode="Markdown")
                 await update.message.copy(chat_id=target_id, reply_markup=user_keyboard)
 
-                # گزارش به ادمین (فقط اگر گیرنده خود ادمین نباشد تا پیام دو بار ارسال نشود)
                 if target_id != ADMIN_ID:
                     admin_header = (
                         f"👁‍🗨 **[مانیتورینگ ادمین]**\n\n"
