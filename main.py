@@ -119,10 +119,10 @@ async def get_join_keyboard():
 
 async def post_init(application):
     init_db()
+    # فقط دستورات عمومی را در منوی تلگرام قرار می‌دهیم تا info نمایش داده نشود
     commands = [
         BotCommand("start", "🚀 شروع و منوی اصلی"),
-        BotCommand("help", "❓ راهنمای استفاده از ربات"),
-        BotCommand("info", "🔍 استعلام هویت (مخصوص ادمین)")
+        BotCommand("help", "❓ راهنمای استفاده از ربات")
     ]
     await application.bot.set_my_commands(commands)
 
@@ -171,6 +171,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def user_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    # فقط ادمین مجاز است
     if user_id != ADMIN_ID:
         return
 
