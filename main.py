@@ -1,35 +1,90 @@
+import sqlite3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler, CallbackQueryHandler, filters
 
 ADMIN_ID = 6447881580          # آیدی عددی ادمین
+REQUIRED_CHANNELS = ["@wilililill", "@Yelllowchat"] # لیست کانال‌ها
 
-# لیست کانال‌های جوین اجباری
-REQUIRED_CHANNELS = ["@wilililill", "@Yelllowchat"]
+# --- بخش مدیریت دیتابیس SQLite ---
+def init_db():
+    conn = sqlite3.connect('bot_data.db')
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+                        user_id INTEGER PRIMARY KEY,
+                        code TEXT,
+                        username TEXT,
+                        first_name TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS blocks (
+                        blocker_id INTEGER,
+                        blocked_code TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS stats (
+                        id INTEGER PRIMARY KEY,
+                        msg_count INTEGER)''')
+    cursor.execute('INSERT OR IGNORE INTO stats (id, msg_count) VALUES (1, 0)')
+    conn.commit()
+    conn.close()
 
-# حافظه ربات
-user_states = {}
-user_code_map = {}             # {code: user_id}
-user_info_map = {}             # {user_id: {'username': str, 'first_name': str}}
-all_users = set()
-blocked_users = {}            # {گیرنده: [لیست فرستنده‌های بلاک شده]}
-total_messages_count = 0
-
-def get_user_code(user: object) -> str:
-    user_id = user.id
-    s = str(user_id)
-    code = s[-8:] if len(s) >= 8 else s.zfill(8)
-    user_code_map[code] = user_id
-    user_info_map[user_id] = {
-        'username': user.username if user.username else "ندارد",
-        'first_name': user.first_name if user.first_name else "نامشخص"
-    }
-    all_users.add(user_id)
+def save_or_update_user(user):
+    conn = sqlite3.connect('bot_data.db')
+    cursor = conn.cursor()
+    s_id = str(user.id)
+    code = s_id[-8:] if len(s_id) >= 8 else s_id.zfill(8)
+    uname = user.username if user.username else "ندارد"
+    fname = user.first_name if user.first_name else "نامشخص"
+    
+    cursor.execute('INSERT OR REPLACE INTO users (user_id, code, username, first_name) VALUES (?, ?, ?, ?)',
+                   (user.id, code, uname, fname))
+    conn.commit()
+    conn.close()
     return code
+
+def get_user_by_code(code):
+    conn = sqlite3.connect('bot_data.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id, username, first_name FROM users WHERE code = ?', (code,))
+    res = cursor.fetchone()
+    conn.close()
+    return res
+
+def is_blocked(blocker_id, sender_code):
+    conn = sqlite3.connect('bot_data.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_code = ?', (blocker_id, sender_code))
+    res = cursor.fetchone()
+    conn.close()
+    return res is not None
+
+def add_block(blocker_id, blocked_code):
+    if not is_blocked(blocker_id, blocked_code):
+        conn = sqlite3.connect('bot_data.db')
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO blocks (blocker_id, blocked_code) VALUES (?, ?)', (blocker_id, blocked_code))
+        conn.commit()
+        conn.close()
+
+def increment_msg_count():
+    conn = sqlite3.connect('bot_data.db')
+    cursor = conn.cursor()
+    cursor.execute('UPDATE stats SET msg_count = msg_count + 1 WHERE id = 1')
+    conn.commit()
+    conn.close()
+
+def get_stats():
+    conn = sqlite3.connect('bot_data.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM users')
+    total_users = cursor.fetchone()[0]
+    cursor.execute('SELECT msg_count FROM stats WHERE id = 1')
+    msg_count = cursor.fetchone()[0]
+    conn.close()
+    return total_users, msg_count
+
+# --- منطق اصلی ربات ---
+user_states = {}
 
 async def check_all_memberships(user_id, context):
     if user_id == ADMIN_ID:
         return True
-        
     for channel in REQUIRED_CHANNELS:
         try:
             member = await context.bot.get_chat_member(chat_id=channel, user_id=user_id)
@@ -48,25 +103,24 @@ async def get_join_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 async def post_init(application):
+    init_db()
     commands = [
         BotCommand("start", "🚀 شروع و منوی اصلی"),
-        BotCommand("help", "❓ راهنمای استفاده از ربات")
+        BotCommand("help", "❓ راهنمای استفاده")
     ]
     await application.bot.set_my_commands(commands)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    sender_code = get_user_code(user)
+    sender_code = save_or_update_user(user)
     args = context.args
 
-    # اگر کاربر با لینک اختصاصی کسی وارد شده باشد، کد گیرنده ذخیره می‌شود
     if args and args[0]:
         target_code = args[0]
         if target_code != sender_code:
             user_states[user_id] = {'action': 'sending_anonymous', 'target_code': target_code}
 
-    # بررسی عضویت در کانال‌ها
     if not await check_all_memberships(user_id, context):
         await update.message.reply_text(
             "⚠️ برای استفاده از ربات، ابتدا باید در تمام کانال‌های زیر عضو شوید:",
@@ -74,13 +128,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # اگر از قبل کدی ثبت شده بود
     state = user_states.get(user_id, {})
     if state.get('action') == 'sending_anonymous':
         target_code = state.get('target_code')
-        target_id = user_code_map.get(target_code)
-        if target_id and sender_code in blocked_users.get(target_id, []):
-            await update.message.reply_text("❌ متاسفانه این کاربر شما را مسدود (بلاک) کرده است.")
+        target = get_user_by_code(target_code)
+        
+        if target and is_blocked(target[0], sender_code):
+            await update.message.reply_text("❌ متاسفانه این کاربر شما را مسدود کرده است.")
             user_states.pop(user_id, None)
             return
         
@@ -89,61 +143,39 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await send_main_menu(update, context)
 
-async def user_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        return
-
-    if not context.args:
-        await update.message.reply_text("⚠️ لطفاً کد کاربر را وارد کنید.\nمثال:\n`/info 12345678`", parse_mode="Markdown")
-        return
-
-    target_code = context.args[0]
-    await show_user_info_by_code(update.message, target_code)
-
 async def show_user_info_by_code(message_obj, target_code: str):
-    target_id = user_code_map.get(target_code)
-    if not target_id:
-        await message_obj.reply_text("❌ کاربری با این کد یافت نشد.")
+    target = get_user_by_code(target_code)
+    if not target:
+        await message_obj.reply_text(f"❌ کاربر با کد `{target_code}` یافت نشد.", parse_mode="Markdown")
         return
 
-    info = user_info_map.get(target_id, {})
-    uname = f"@{info.get('username')}" if info.get('username') != "ندارد" else "ندارد"
-    fname = info.get('first_name', 'نامشخص')
+    target_id, uname, fname = target
+    uname_str = f"@{uname}" if uname != "ندارد" else "ندارد"
 
     res = (
         f"🔍 **اطلاعات واقعی کاربر با کد `{target_code}`:**\n\n"
         f"👤 **نام واقعی:** {fname}\n"
-        f"🆔 **یوزرنیم تلگرام:** {uname}\n"
+        f"🆔 **یوزرنیم:** {uname_str}\n"
         f"🔢 **آیدی عددی:** `{target_id}`"
     )
     await message_obj.reply_text(res, parse_mode="Markdown")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
-        "❓ **راهنمای استفاده از یـلو چت:**\n\n"
-        "1️⃣ لینک اختصاصی خود را از منوی اصلی دریافت کنید.\n"
-        "2️⃣ لینک را در بیو تلگرام یا شبکه‌های اجتماعی بگذارید.\n"
-        "3️⃣ هرکس روی لینک بزند، می‌تواند به شما پیام، ویس، عکس، گیف یا استیکر ناشناس بفرستد!\n"
-        "4️⃣ می‌توانید به پیام‌های دریافتی پاسخ دهید یا فرستنده مزاحم را بلاک کنید."
-    )
-    await update.message.reply_text(help_text, parse_mode="Markdown")
-
 async def send_main_menu(update_or_query, context):
     user = update_or_query.effective_user
     user_id = user.id
-    sender_code = get_user_code(user)
+    sender_code = save_or_update_user(user)
+    total_users, _ = get_stats()
 
     if user_id == ADMIN_ID:
         keyboard = [
             [InlineKeyboardButton("🔗 لینک ناشناس من", callback_data="get_link")],
             [InlineKeyboardButton("📊 آمار ربات", callback_data="admin_stats"), InlineKeyboardButton("📢 پیام همگانی", callback_data="start_broadcast")]
         ]
-        text = f"👑 **پنل مدیریت یـلو چت**\n\nتعداد کاربران تا این لحظه: {len(all_users)}\nکد اختصاصی شما: `{sender_code}`\n\n💡 *برای استعلام دستی هویت: `/info کد`*"
+        text = f"👑 **پنل مدیریت یـلو چت**\n\nتعداد کاربران: {total_users}\nکد اختصاصی شما: `{sender_code}`"
     else:
         keyboard = [
             [InlineKeyboardButton("🔗 لینک ناشناس من", callback_data="get_link")],
-            [InlineKeyboardButton("🚫 کاربران بلاک‌شده", callback_data="show_blocked"), InlineKeyboardButton("📩 پشتیبانی", callback_data="support_mode")]
+            [InlineKeyboardButton("📩 پشتیبانی", callback_data="support_mode")]
         ]
         text = f"💛 به یــلو چت خوش آمدید!\n\nکد اختصاصی شما: `{sender_code}`"
 
@@ -159,23 +191,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user = query.from_user
     user_id = user.id
-    sender_code = get_user_code(user)
+    sender_code = save_or_update_user(user)
 
     if query.data == "check_join":
         if await check_all_memberships(user_id, context):
-            await query.message.delete()
-            await query.message.reply_text("عضویت شما تایید شد! 🎉")
+            try:
+                await query.message.delete()
+            except:
+                pass
             
-            # هدایت خودکار کاربر پس از تایید عضویت
             state = user_states.get(user_id, {})
             if state.get('action') == 'sending_anonymous':
-                target_code = state.get('target_code')
-                target_id = user_code_map.get(target_code)
-                if target_id and sender_code in blocked_users.get(target_id, []):
-                    await query.message.reply_text("❌ متاسفانه این کاربر شما را مسدود (بلاک) کرده است.")
-                    user_states.pop(user_id, None)
-                    return
-                await query.message.reply_text("✍️ پیام، عکس، ویس، گیف یا استیکر ناشناس خود را بفرستید:")
+                await query.message.reply_text("✅ عضویت تایید شد!\n\n✍️ پیام ناشناس خود را بفرستید:")
             else:
                 await send_main_menu(update, context)
         else:
@@ -184,25 +211,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "get_link":
         bot_info = await context.bot.get_me()
         personal_link = f"https://t.me/{bot_info.username}?start={sender_code}"
-        msg = f"📌 لینک ناشناس شما:\n\n{personal_link}\n\nاین لینک را در بیو قرار دهید تا دیگران به شما پیام ناشناس بفرستند!"
-        await query.message.reply_text(msg, parse_mode="Markdown")
-
-    elif query.data == "show_blocked":
-        user_blocks = blocked_users.get(user_id, [])
-        if not user_blocks:
-            await query.answer("لیست مسدودی‌های شما خالی است!", show_alert=True)
-        else:
-            await query.message.reply_text("🚫 لیست کاربران بلاک‌شده توسط شما:", parse_mode="Markdown")
-            for b_code in user_blocks:
-                btn = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ آنبلاک کد {b_code}", callback_data=f"unblock_{b_code}")]])
-                await query.message.reply_text(f"👤 کاربر با کد: {b_code}", reply_markup=btn, parse_mode="Markdown")
-
-    elif query.data.startswith("unblock_"):
-        target_code_to_unblock = query.data.split("_")[1]
-        if user_id in blocked_users and target_code_to_unblock in blocked_users[user_id]:
-            blocked_users[user_id].remove(target_code_to_unblock)
-            await query.answer("کاربر با موفقیت آنبلاک شد ✅", show_alert=True)
-            await query.message.edit_text(f"✅ کاربر با کد {target_code_to_unblock} از مسدودی خارج شد.", parse_mode="Markdown")
+        await query.message.reply_text(f"📌 لینک ناشناس شما:\n\n{personal_link}", parse_mode="Markdown")
 
     elif query.data.startswith("checkuser_"):
         if user_id == ADMIN_ID:
@@ -210,131 +219,100 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_user_info_by_code(query.message, code_to_check)
 
     elif query.data == "admin_stats":
-        stats_msg = (
-            f"📊 آمار کلی ربات یـلو چت:\n\n"
-            f"👥 کل کاربران: {len(all_users)} نفر\n"
-            f"💬 کل پیام‌های منتقل‌شده: {total_messages_count} پیام"
-        )
-        await query.message.reply_text(stats_msg, parse_mode="Markdown")
+        tot, msgs = get_stats()
+        await query.message.reply_text(f"📊 آمار ربات:\n\n👥 کاربران: {tot}\n💬 پیام‌ها: {msgs}")
 
     elif query.data == "start_broadcast":
         user_states[user_id] = {'action': 'awaiting_broadcast'}
-        await query.message.reply_text("✍️ پیام، گیف، استیکر یا فایل عمومی خود را بفرستید تا به تمام کاربران ارسال شود:")
+        await query.message.reply_text("✍️ پیام عمومی خود را بفرستید:")
 
     elif query.data.startswith("block_"):
         target_code_to_block = query.data.split("_")[1]
-        if user_id not in blocked_users:
-            blocked_users[user_id] = []
-        if target_code_to_block not in blocked_users[user_id]:
-            blocked_users[user_id].append(target_code_to_block)
+        add_block(user_id, target_code_to_block)
         await query.answer("کاربر مسدود شد 🚫", show_alert=True)
-        await query.message.edit_text(query.message.text + "\n\n❌ *(این کاربر توسط شما مسدود شد)*")
 
     elif query.data.startswith("reply_"):
         if not await check_all_memberships(user_id, context):
-            await query.message.reply_text("⚠️ برای ادامه کار باید در کانال‌های ما عضو باشید:", reply_markup=await get_join_keyboard())
+            await query.message.reply_text("⚠️ برای ادامه باید در کانال‌ها عضو شوید:", reply_markup=await get_join_keyboard())
             return
         target_code = query.data.split("_")[1]
         user_states[user_id] = {'action': 'replying', 'target_code': target_code}
-        await query.message.reply_text("✍️ پاسخ خود (متن، استیکر، گیف، ویس و...) را بفرستید:")
-
-    elif query.data.startswith("react_"):
-        if not await check_all_memberships(user_id, context):
-            await query.message.reply_text("⚠️ برای ادامه کار باید در کانال‌های ما عضو باشید:", reply_markup=await get_join_keyboard())
-            return
-        target_code = query.data.split("_")[1]
-        keyboard = [
-            [InlineKeyboardButton("❤️", callback_data=f"sendreact_❤️_{target_code}"),
-             InlineKeyboardButton("😂", callback_data=f"sendreact_😂_{target_code}"),
-             InlineKeyboardButton("🔥", callback_data=f"sendreact_🔥_{target_code}"),
-             InlineKeyboardButton("👍", callback_data=f"sendreact_👍_{target_code}")]
-        ]
-        await query.message.reply_text("یک ری‌اکشن انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif query.data.startswith("sendreact_"):
-        _, emoji, target_code = query.data.split("_")
-        target_id = user_code_map.get(target_code)
-        if target_id:
-            try:
-                await context.bot.send_message(chat_id=target_id, text=f"طرف مقابل به پیام شما این ری‌اکشن را نشان داد: {emoji}")
-            except:
-                pass
-        await query.message.edit_text(f"ری‌اکشن {emoji} ارسال شد!")
+        await query.message.reply_text("✍️ پاسخ خود را بفرستید:")
 
     elif query.data == "support_mode":
-        if not await check_all_memberships(user_id, context):
-            await query.message.reply_text("⚠️ برای ادامه کار باید در کانال‌های ما عضو باشید:", reply_markup=await get_join_keyboard())
-            return
         user_states[user_id] = {'action': 'support'}
         await query.message.reply_text("✍️ پیام خود را برای پشتیبانی بفرستید:")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global total_messages_count
     user = update.effective_user
     user_id = user.id
-    sender_code = get_user_code(user)
+    sender_code = save_or_update_user(user)
 
     if not await check_all_memberships(user_id, context):
-        await update.message.reply_text(
-            "❌ شما از یکی از کانال‌های ما لفت داده‌اید!\nبرای ادامه کار، لطفاً مجدداً در کانال‌ها عضو شوید:",
-            reply_markup=await get_join_keyboard()
-        )
+        await update.message.reply_text("❌ ابتدا باید در کانال‌ها عضو شوید:", reply_markup=await get_join_keyboard())
         return
 
     state = user_states.get(user_id, {})
 
+    # ارسال همگانی
     if user_id == ADMIN_ID and state.get('action') == 'awaiting_broadcast':
         user_states.pop(user_id, None)
-        success, failed = 0, 0
-        await update.message.reply_text("⏳ در حال ارسال به تمام کاربران...")
-        for uid in list(all_users):
+        conn = sqlite3.connect('bot_data.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT user_id FROM users')
+        all_u = cursor.fetchall()
+        conn.close()
+
+        success = 0
+        for u in all_u:
             try:
-                await update.message.copy(chat_id=uid)
+                await update.message.copy(chat_id=u[0])
                 success += 1
             except:
-                failed += 1
-        await update.message.reply_text(f"✅ پیام همگانی ارسال شد!\n\nموفق: {success}\nناموفق: {failed}")
+                pass
+        await update.message.reply_text(f"✅ پیام به {success} نفر ارسال شد.")
         return
 
+    # ارسال پیام ناشناس و پاسخ
     if state.get('action') in ['sending_anonymous', 'replying']:
         target_code = state.get('target_code')
-        target_id = user_code_map.get(target_code)
+        target = get_user_by_code(target_code)
 
-        if target_id and sender_code in blocked_users.get(target_id, []):
-            await update.message.reply_text("❌ این کاربر شما را مسدود کرده است.")
-            user_states.pop(user_id, None)
-            return
+        if target:
+            target_id = target[0]
+            if is_blocked(target_id, sender_code):
+                await update.message.reply_text("❌ شما توسط این کاربر بلاک شده‌اید.")
+                user_states.pop(user_id, None)
+                return
 
-        user_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💬 پاسخ", callback_data=f"reply_{sender_code}"),
-             InlineKeyboardButton("❤️ ری‌اکشن", callback_data=f"react_{sender_code}")],
-            [InlineKeyboardButton("🚫 بلاک این فرستنده", callback_data=f"block_{sender_code}")]
-        ])
+            user_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💬 پاسخ", callback_data=f"reply_{sender_code}")],
+                [InlineKeyboardButton("🚫 بلاک این فرستنده", callback_data=f"block_{sender_code}")]
+            ])
 
-        admin_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔍 هویت فرستنده", callback_data=f"checkuser_{sender_code}"),
-             InlineKeyboardButton("🔍 هویت گیرنده", callback_data=f"checkuser_{target_code}")]
-        ])
+            admin_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔍 هویت فرستنده", callback_data=f"checkuser_{sender_code}"),
+                 InlineKeyboardButton("🔍 هویت گیرنده", callback_data=f"checkuser_{target_code}")]
+            ])
 
-        if target_id:
             try:
-                user_msg_text = f"📩 **پیام ناشناس جدید از طرف کاربر (کد: `{sender_code}`):**"
-                
-                await context.bot.send_message(chat_id=target_id, text=user_msg_text, parse_mode="Markdown")
+                # ارسال به گیرنده (فرم پیام برای کاربر معمولی)
+                await context.bot.send_message(chat_id=target_id, text=f"📩 **پیام ناشناس جدید از طرف کاربر (کد: `{sender_code}`):**", parse_mode="Markdown")
                 await update.message.copy(chat_id=target_id, reply_markup=user_keyboard)
 
+                # گزارش به ادمین (فرستنده و گیرنده مشخص)
                 if target_id != ADMIN_ID:
                     admin_header = (
                         f"👁‍🗨 **[مانیتورینگ ادمین]**\n\n"
                         f"👤 **فرستنده (کد):** `{sender_code}`\n"
                         f"🎯 **گیرنده (کد):** `{target_code}`\n"
-                        f"👇 **پیام ارسال‌شده:**"
+                        f"👇 **پیام:**"
                     )
                     await context.bot.send_message(chat_id=ADMIN_ID, text=admin_header, parse_mode="Markdown")
                     await update.message.copy(chat_id=ADMIN_ID, reply_markup=admin_keyboard)
 
-                total_messages_count += 1
-                await update.message.reply_text("پیام شما به صورت ناشناس ارسال شد! ✅")
+                increment_msg_count()
+                await update.message.reply_text("پیام شما ارسال شد! ✅")
             except:
                 await update.message.reply_text("❌ خطا در ارسال پیام.")
         else:
@@ -344,38 +322,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif state.get('action') == 'support':
         admin_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💬 پاسخ به این پیام", callback_data=f"reply_{sender_code}")],
-            [InlineKeyboardButton("🔍 هویت فرستنده (ادمین)", callback_data=f"checkuser_{sender_code}")]
+            [InlineKeyboardButton("💬 پاسخ", callback_data=f"reply_{sender_code}")],
+            [InlineKeyboardButton("🔍 هویت فرستنده", callback_data=f"checkuser_{sender_code}")]
         ])
-        
-        header_text = (
-            f"📩 **پیام جدید پشتیبانی**\n\n"
-            f"👤 **فرستنده (کد):** `{sender_code}`\n"
-            f"🎯 **گیرنده:** `پشتیبانی (ادمین)`\n"
-            f"👇 **پیام:**"
-        )
-
-        await context.bot.send_message(chat_id=ADMIN_ID, text=header_text, reply_markup=admin_keyboard, parse_mode="Markdown")
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"📩 **پیام جدید پشتیبانی از کد `{sender_code}`:**", reply_markup=admin_keyboard, parse_mode="Markdown")
         await update.message.copy(chat_id=ADMIN_ID)
         await update.message.reply_text("پیام شما به پشتیبانی ارسال شد ✅")
         user_states.pop(user_id, None)
 
     else:
-        if user_id == ADMIN_ID:
-            await send_main_menu(update, context)
-        else:
-            await update.message.reply_text("برای شروع دستور /start را بزنید.")
+        await send_main_menu(update, context)
 
 if __name__ == '__main__':
     TOKEN = "8785381801:AAF2k7OtrCvTQLzhUi6jHSdMHmdz-FltehI"
-
     application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("info", user_info_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), handle_message))
 
-    print("ربات یـلو چت روشن شد...")
+    print("ربات آنلاین شد...")
     application.run_polling()
