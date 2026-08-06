@@ -5,12 +5,12 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, Comma
 ADMIN_ID = 6447881580          # آیدی عددی ادمین
 REQUIRED_CHANNELS = ["@wilililill", "@Yelllowchat"] # لیست کانال‌ها
 
-# --- تابع کمکی ساخت کد یکسان ---
+# --- تابع ساخت کد یکسان ---
 def generate_user_code(user_id):
     s_id = str(user_id)
     return s_id[-8:] if len(s_id) >= 8 else s_id.zfill(8)
 
-# --- بخش مدیریت دیتابیس SQLite ---
+# --- بخش دیتابیس ---
 def init_db():
     conn = sqlite3.connect('bot_data.db')
     cursor = conn.cursor()
@@ -27,7 +27,7 @@ def init_db():
                         msg_count INTEGER)''')
     cursor.execute('INSERT OR IGNORE INTO stats (id, msg_count) VALUES (1, 0)')
     
-    # اصلاح فرمت داده‌های قدیمی در صورت وجود
+    # یکسان‌سازی فرمت داده‌های قدیمی
     cursor.execute('SELECT user_id FROM users')
     rows = cursor.fetchall()
     for row in rows:
@@ -51,16 +51,16 @@ def save_or_update_user(user):
     conn.close()
     return code
 
-def get_user_by_code(code):
-    clean_code = str(code).strip()
-    padded_code = clean_code.zfill(8) if len(clean_code) < 8 else clean_code[-8:]
+def get_user_by_code_or_id(identifier):
+    clean_id = str(identifier).strip()
+    padded_code = clean_id.zfill(8) if len(clean_id) < 8 else clean_id[-8:]
     
     conn = sqlite3.connect('bot_data.db')
     cursor = conn.cursor()
-    # جستجو بر اساس تمام حالت‌های ممکن کد
+    # جستجو بر اساس کد یا آیدی عددی مستقیم
     cursor.execute('''SELECT user_id, username, first_name, code FROM users 
                       WHERE code = ? OR code = ? OR user_id = ?''', 
-                   (clean_code, padded_code, clean_code if clean_code.isdigit() else -1))
+                   (clean_id, padded_code, clean_id if clean_id.isdigit() else -1))
     res = cursor.fetchone()
     conn.close()
     return res
@@ -68,8 +68,7 @@ def get_user_by_code(code):
 def is_blocked(blocker_id, sender_code):
     conn = sqlite3.connect('bot_data.db')
     cursor = conn.cursor()
-    clean_code = str(sender_code).strip()
-    cursor.execute('SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_code = ?', (blocker_id, clean_code))
+    cursor.execute('SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_code = ?', (blocker_id, str(sender_code).strip()))
     res = cursor.fetchone()
     conn.close()
     return res is not None
@@ -84,10 +83,9 @@ def add_block(blocker_id, blocked_code):
         conn.close()
 
 def remove_block(blocker_id, blocked_code):
-    clean_code = str(blocked_code).strip()
     conn = sqlite3.connect('bot_data.db')
     cursor = conn.cursor()
-    cursor.execute('DELETE FROM blocks WHERE blocker_id = ? AND blocked_code = ?', (blocker_id, clean_code))
+    cursor.execute('DELETE FROM blocks WHERE blocker_id = ? AND blocked_code = ?', (blocker_id, str(blocked_code).strip()))
     conn.commit()
     conn.close()
 
@@ -150,7 +148,7 @@ async def post_init(application):
     admin_commands = [
         BotCommand("start", "🚀 شروع و منوی اصلی"),
         BotCommand("help", "❓ راهنمای استفاده از ربات"),
-        BotCommand("info", "🔍 استعلام هویت کاربر با کد")
+        BotCommand("info", "🔍 استعلام هویت کاربر با کد یا آیدی عددی")
     ]
     try:
         await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_ID))
@@ -178,10 +176,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = user_states.get(user_id, {})
     if state.get('action') == 'sending_anonymous':
         target_code = state.get('target_code')
-        target = get_user_by_code(target_code)
+        target = get_user_by_code_or_id(target_code)
         
         if not target:
-            await update.message.reply_text("❌ کاربر مورد نظر پیدا نشد یا لینک منقضی شده است.")
+            await update.message.reply_text("❌ کاربر مورد نظر پیدا نشد.")
             user_states.pop(user_id, None)
             return
 
@@ -211,27 +209,29 @@ async def user_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        await update.message.reply_text("⚠️ لطفاً کد کاربر را وارد کنید.\nمثال:\n`/info 12345678`", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ لطفاً کد یا آیدی عددی کاربر را وارد کنید.\nمثال:\n`/info 12345678`", parse_mode="Markdown")
         return
 
-    target_code = context.args[0]
-    await show_user_info_by_code(update.message, target_code)
+    target_identifier = context.args[0]
+    await show_user_info(update.message, target_identifier)
 
-async def show_user_info_by_code(message_obj, target_code: str):
-    target = get_user_by_code(target_code)
+async def show_user_info(message_obj, identifier: str):
+    target = get_user_by_code_or_id(identifier)
     if not target:
-        await message_obj.reply_text(f"❌ کاربر با کد `{target_code}` در دیتابیس یافت نشد.", parse_mode="Markdown")
+        await message_obj.reply_text(f"❌ کاربر با شناسه `{identifier}` در دیتابیس یافت نشد.", parse_mode="Markdown")
         return
 
     target_id, uname, fname, code_in_db = target
     uname_str = f"@{uname}" if uname != "ندارد" else "ندارد"
+    profile_link = f"tg://user?id={target_id}"
 
     res = (
-        f"🔍 **اطلاعات واقعی کاربر:**\n\n"
-        f"🔢 **کد اختصاصی:** `{code_in_db}`\n"
+        f"🔍 **اطلاعات کامل و هویت کاربر:**\n\n"
         f"👤 **نام واقعی:** {fname}\n"
         f"🆔 **یوزرنیم:** {uname_str}\n"
-        f"🆔 **آیدی عددی:** `{target_id}`"
+        f"🔢 **کد اختصاصی:** `{code_in_db}`\n"
+        f"🆔 **آیدی عددی (Chat ID):** `{target_id}`\n\n"
+        f"🔗 [مشاهده/پیام به اکانت کاربر]({profile_link})"
     )
     await message_obj.reply_text(res, parse_mode="Markdown")
 
@@ -309,8 +309,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data.startswith("checkuser_"):
         if user_id == ADMIN_ID:
-            code_to_check = query.data.replace("checkuser_", "", 1)
-            await show_user_info_by_code(query.message, code_to_check)
+            identifier_to_check = query.data.replace("checkuser_", "", 1)
+            await show_user_info(query.message, identifier_to_check)
         else:
             await query.answer("این قابلیت فقط برای ادمین ربات است! ❌", show_alert=True)
 
@@ -358,7 +358,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = query.data.split("_", 2)
         if len(parts) == 3:
             _, emoji, target_code = parts
-            target = get_user_by_code(target_code)
+            target = get_user_by_code_or_id(target_code)
             if target:
                 try:
                     await context.bot.send_message(chat_id=target[0], text=f"طرف مقابل به پیام شما این ری‌اکشن را نشان داد: {emoji}")
@@ -406,10 +406,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ارسال پیام ناشناس و پاسخ
     if state.get('action') in ['sending_anonymous', 'replying']:
         target_code = state.get('target_code')
-        target = get_user_by_code(target_code)
+        target = get_user_by_code_or_id(target_code)
 
         if target:
             target_id = target[0]
+            target_real_code = target[3]
+            
             if is_blocked(target_id, sender_code):
                 await update.message.reply_text("❌ شما توسط این کاربر بلاک شده‌اید.")
                 user_states.pop(user_id, None)
@@ -421,9 +423,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🚫 بلاک این فرستنده", callback_data=f"block_{sender_code}")]
             ])
 
+            # ارسال مستقیم آیدی عددی به دکمه‌های مانیتورینگ برای جلوگیری از خطای کد
             admin_keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔍 هویت فرستنده", callback_data=f"checkuser_{sender_code}"),
-                 InlineKeyboardButton("🔍 هویت گیرنده", callback_data=f"checkuser_{target_code}")]
+                [InlineKeyboardButton("🔍 هویت فرستنده", callback_data=f"checkuser_{user_id}"),
+                 InlineKeyboardButton("🔍 هویت گیرنده", callback_data=f"checkuser_{target_id}")]
             ])
 
             try:
@@ -433,8 +436,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if target_id != ADMIN_ID:
                     admin_header = (
                         f"👁‍🗨 **[مانیتورینگ ادمین]**\n\n"
-                        f"👤 **فرستنده (کد):** `{sender_code}`\n"
-                        f"🎯 **گیرنده (کد):** `{target_code}`\n"
+                        f"👤 **فرستنده:** `{user.first_name}` (کد: `{sender_code}`)\n"
+                        f"🎯 **گیرنده:** `{target[2]}` (کد: `{target_real_code}`)\n"
                         f"👇 **پیام:**"
                     )
                     await context.bot.send_message(chat_id=ADMIN_ID, text=admin_header, parse_mode="Markdown")
@@ -452,7 +455,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif state.get('action') == 'support':
         admin_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("💬 پاسخ", callback_data=f"reply_{sender_code}"),
-             InlineKeyboardButton("🔍 هویت فرستنده", callback_data=f"checkuser_{sender_code}")]
+             InlineKeyboardButton("🔍 هویت فرستنده", callback_data=f"checkuser_{user_id}")]
         ])
         await context.bot.send_message(chat_id=ADMIN_ID, text=f"📩 **پیام جدید پشتیبانی از کد `{sender_code}`:**", reply_markup=admin_keyboard, parse_mode="Markdown")
         await update.message.copy(chat_id=ADMIN_ID)
